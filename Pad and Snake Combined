@@ -1,1 +1,490 @@
+#include <FastLED.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
 
+#define NUM_LEDS 81
+#define LED_PIN 9
+
+#define BRIGHTNESS 100
+#define LED_TYPE WS2812B
+#define COLOR_ORDER GRB
+
+CRGB leds[NUM_LEDS];
+
+#define BTN_GUITAR 2
+#define BTN_SNAKE 3
+
+enum GameMode { MENU, GUITAR, SNAKE };
+GameMode gameMode = MENU;
+
+unsigned long gameStartTime = 0;
+const unsigned long GAME_DURATION = 168000;
+
+#define NUM_COLS 9
+#define NUM_ROWS 9
+
+#define SCORE_TAP 100
+#define SCORE_HOLD 300
+#define SCORE_MISS 50
+
+int gameCols[5] = {2, 3, 4, 5, 6};
+#define NUM_GAME_COLS 5
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+CRGB laneColors[NUM_GAME_COLS] = {CRGB::Blue, CRGB::Red, CRGB::Green, CRGB::White, CRGB::Yellow};
+
+int buttonPins[NUM_GAME_COLS] = {2, 3, 5, 6, 7};
+
+int tileY[NUM_GAME_COLS] = {-3, -3, -3, -3, -3};
+int tileLength[NUM_GAME_COLS] = {0, 0, 0, 0, 0};
+int tileActive[NUM_GAME_COLS] = {false, false, false, false, false};
+
+bool laneHeld[NUM_GAME_COLS] = {false};
+bool segmentHit[NUM_GAME_COLS][NUM_ROWS] = {false};
+
+unsigned long lastFallTime = 0;
+int fallDelay = 250;
+int score = 0;
+
+int indexFromColRow(int col, int row) {
+  int base = col * NUM_ROWS;
+
+  if (col % 2 == 0) {
+    return base + row;
+  } else {
+    return base + (NUM_ROWS - 1 - row);
+  }
+}
+
+void showMenu() {
+  gameMode = MENU;
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Select Game");
+  lcd.setCursor(0, 1);
+  lcd.print("1:Slayer 2:Snake");
+}
+
+void startGame(GameMode g) {
+  gameMode = g;
+  gameStartTime = millis();
+  score = 0;
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Score: 0");
+
+  fill_solid(leds,NUM_LEDS, CRGB::Black);
+  FastLED.show();
+
+  if (g == GUITAR) {
+    buttonHeroSetup();
+  }
+
+  if (g == SNAKE) {
+    resetSnake();
+  }
+}
+
+void endGame() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("GAME OVER");
+  lcd.setCursor(0, 1);
+  lcd.print("Final: ");
+  lcd.print(score);
+
+  delay(3000);
+  showMenu();
+}
+
+void buttonHeroSetup()
+{
+  /*Serial.begin(9600);
+  Serial.println("Pixel Slayer");*/
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Pixel Slayer");
+  lcd.setCursor(0, 1);
+  lcd.print("Score: 0");
+
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);
+
+  for (int i = 0; i < NUM_GAME_COLS; i++) {
+    pinMode(buttonPins[i], INPUT_PULLUP);
+    tileActive[i] = false;
+    tileY[i] = -3;
+    tileLength[i] = 0;
+
+    for (int r = 0; r < 9; r++) segmentHit[i][r] = false;
+  }
+
+  fill_solid(leds, NUM_LEDS, CRGB(128, 0, 128));
+  FastLED.show();
+  delay(800);
+
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+
+  randomSeed(analogRead(A0));
+  delay(800);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("BEGIN");
+  lcd.setCursor(0, 1);
+  lcd.print("Score: 0");
+  delay(600);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Score: 0");
+}
+
+void buttonHeroLoop() {
+  if(millis() - gameStartTime >= GAME_DURATION) {
+    endGame();
+    return;
+  }
+  
+  unsigned long t = millis();
+
+  if (t - lastFallTime > (unsigned long)fallDelay) {
+    lastFallTime = t;
+    moveTilesDown();
+    spawnTiles();
+    drawTiles();
+  }
+
+  checkButtons();
+}
+
+void moveTilesDown() {
+  for (int i = 0; i < NUM_GAME_COLS; i++) {
+    if (tileActive[i]) {
+      tileY[i]++;
+      
+      if (tileY[i] - (tileLength[i] - 1) > (NUM_ROWS - 1)) {
+        tileActive[i] = false;
+        tileY[i] = -3;
+        tileLength[i] = 0;
+
+        for (int r = 0; r < 0; r++) segmentHit[i][r] = false;
+        
+        //showMessageLCD("Missed col " + String(i + 1), 600);
+      }
+    }
+  }
+}
+
+void spawnTiles() {
+   int col = random(0, NUM_GAME_COLS);
+      
+   if (!tileActive[col]) {
+     tileActive[col] = true;
+     tileY[col] = -3;
+     tileLength[col] = random(0, 2) == 0 ? 1 : 3;
+     for (int r = 0; r < 9; r++) segmentHit[col][r] = false;
+   }
+}
+
+void drawTiles() {
+
+  fill_solid(leds, NUM_LEDS, CRGB(128, 0, 128));
+
+  for (int lane = 0; lane < NUM_GAME_COLS; ++lane) {
+    if (!tileActive[lane]) continue;
+    int col = gameCols[lane];
+    CRGB color = laneColors[lane];
+
+    for (int seg = 0; seg < tileLength[lane]; ++seg) {
+      int row = tileY[lane] + seg;
+      if (row < 0 || row >= NUM_ROWS) continue;
+      int idx = indexFromColRow(col, row);
+      leds[idx] = color;
+    }
+ }
+
+  FastLED.show();
+}
+
+void checkButtons() {
+  for (int lane = 0; lane < NUM_GAME_COLS; ++lane) {
+      
+    bool pressed = (digitalRead(buttonPins[lane]) == LOW);
+
+    laneHeld[lane] = pressed;
+    
+    if (pressed && tileActive[lane]){
+      for (int seg = 0; seg < tileLength[lane]; ++seg) {
+        int row = tileY[lane] + seg;
+        
+        if (row == NUM_ROWS - 1 && !segmentHit[lane][seg]) {
+          segmentHit[lane][seg] = true;
+          int idx = indexFromColRow(gameCols[lane], NUM_ROWS - 1);
+          leds[idx] = CRGB::Orange;
+          FastLED.show();
+
+          if (tileLength[lane] > 1) {
+            score += SCORE_HOLD;
+          } else {
+            score += SCORE_TAP;
+          }
+          
+          updateScoreLCD();
+
+          showMessageLCD("Hit col " + String(lane + 1), 120);
+        }
+      }
+    }
+
+    if (pressed) {
+      bool hitSegment = false;
+
+      //Serial.println("button pressed");
+      
+      for (int seg = 0; seg < tileLength[lane]; ++seg) {
+        int row = tileY[lane] + seg;
+        if (row == NUM_ROWS - 1) {
+          hitSegment = true;
+          break;
+        }
+       }
+    
+    if (!hitSegment) {
+      int idx = indexFromColRow(gameCols[lane], NUM_ROWS - 1);
+      leds[idx] = CRGB::Red;
+      FastLED.show();
+      delay(60);
+
+      score = max(0, score - SCORE_MISS);
+      //updateScoreLCD();
+      //showMessageLCD("Wrong col " + String(lane + 1), 120);
+    }
+   }
+  }
+}
+
+void updateScoreLCD() {
+  lcd.setCursor(0, 0);
+  lcd.print("Score: ");
+  lcd.print(score);
+  int pad = 16 - 7;
+  for (int i = 0; i < pad; ++i) lcd.print(' ');
+}
+
+void showMessageLCD(const String &msg, unsigned long ms) {
+  lcd.setCursor(0, 1);
+  lcd.print(msg);
+  int len = msg.length();
+  for (int i = len; i < 16; ++i) lcd.print(' ');
+  delay(ms);
+  updateScoreLCD();
+}
+
+const int WIDTH = 9;
+const int HEIGHT = 9;
+
+#define JOY_X A0
+#define JOY_Y A1
+
+const int DEADZONE_MIN = 450;
+const int DEADZONE_MAX = 570;
+
+bool stickCentered = true;
+
+int snake[81];
+int snakeLength = 3;
+int direction = 1;
+int nextDirection = 1;
+
+int headRow = 4;
+int headCol = 4;
+
+int food = 40;
+
+int XY(int x, int y) {
+  if (y % 2 == 0) {
+    return y * WIDTH + x;
+  } else{
+    return y * WIDTH + (WIDTH - 1 - x);
+  }
+}
+
+void spawnFood() {
+  while (true) {
+    int f = random(0, 81);
+    bool onSnake = false;
+    
+    for (int i = 0; i < snakeLength; i++) {
+      if (snake[i] == f) onSnake = true;
+    }
+
+    if (!onSnake) {
+      food = f;
+      return;
+    }
+  }
+}
+
+void resetSnake() {
+  snakeLength = 3;
+  headRow = 4;
+  headCol = 4;
+  snake[0] = XY(4, 4);
+  snake[1] = XY(3, 4);
+  snake[2] = XY(2, 4);
+  direction = 1;
+  nextDirection = 1;
+  stickCentered = true;
+  spawnFood();
+  delay(300);
+}
+
+void snakeSetup() {
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);
+
+  pinMode(JOY_X, INPUT);
+  pinMode(JOY_Y, INPUT);
+  randomSeed(analogRead(0));
+
+  resetSnake();
+}
+
+void readJoystick() {
+  int x = analogRead(JOY_X);
+  int y = analogRead(JOY_Y);
+
+  bool inDeadzone = (x > DEADZONE_MIN && x < DEADZONE_MAX && y > DEADZONE_MIN && y < DEADZONE_MAX);
+
+  if (inDeadzone) {
+    stickCentered = true;
+    return;
+  }
+
+  if (!stickCentered) return;
+
+  int newDir = direction;
+
+  if (x < DEADZONE_MIN) newDir = 1;
+  else if (x > DEADZONE_MAX) newDir = 3;
+  else if (y < DEADZONE_MIN) newDir = 0;
+  else if (y > DEADZONE_MAX) newDir = 2;
+
+  if (!((direction == 0 && newDir == 2) || (direction == 2 && newDir == 0) || (direction == 1 && newDir == 3) || (direction == 3 && newDir == 1))) {
+    nextDirection = newDir;
+    stickCentered = false;
+  }
+}
+
+void snakeLoop() {
+  readJoystick();
+
+  direction = nextDirection;
+
+  int dRow = 0;
+  int dCol = 0;
+
+
+  if (direction == 0) dRow = -1;
+  if (direction == 1) dCol = 1;
+  if (direction == 2) dRow = 1;
+  if (direction == 3) dCol = -1;
+
+  int newRow = headRow + dRow;
+  int newCol = headCol + dCol;
+
+  if (newRow < 0 || newRow >= WIDTH || newCol < 0 || newCol >= HEIGHT) {
+    endGame();
+    return;
+  }
+
+  int newHead = XY(newCol, newRow);
+
+  for (int i = 0; i < snakeLength; i++) {
+    if (snake[i] == newHead) {
+      resetSnake();
+      return;
+    }
+  }
+
+  for (int i = snakeLength; i > 0; i--) {
+    snake[i] = snake[i - 1];
+  }
+  
+  snake[0] = newHead;
+  headRow = newRow;
+  headCol = newCol;
+
+  if (newHead == food) {
+    snakeLength++;
+    score += 1;
+    updateScoreLCD();
+    spawnFood();
+  } 
+
+  fill_solid(leds, NUM_LEDS, CRGB::Blue);
+
+  leds[food] = CRGB::Red;
+  leds[snake[0]] = CRGB::Green;
+  
+  for (int i = 1; i < snakeLength; i++) {
+    leds[snake[i]] = CRGB::Yellow;
+  }
+
+  FastLED.show();
+  delay(300);
+}
+
+void setup() {
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+
+  lcd.init();
+  lcd.backlight();
+  /*lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Select Game");
+  lcd.setCursor(0,1);
+  lcd.print("1:Slayer 2:Snake");*/
+  pinMode(BTN_GUITAR, INPUT_PULLUP);
+  pinMode(BTN_SNAKE, INPUT_PULLUP);
+
+  for (int i = 0; i < NUM_GAME_COLS; i++) {
+    pinMode(buttonPins[i], INPUT_PULLUP);
+  }
+
+  randomSeed(analogRead(A0));
+  showMenu();
+}
+
+void loop() {
+  if (gameMode == MENU) {
+    if (digitalRead(BTN_GUITAR) == LOW) {
+      gameMode = GUITAR;
+      buttonHeroSetup();
+    }
+    if (digitalRead(BTN_SNAKE) == LOW) {
+      gameMode = SNAKE;
+      snakeSetup();
+    }
+  }
+  else if (gameMode == GUITAR) {
+    buttonHeroLoop();
+  }
+  else if (gameMode == SNAKE) {
+    snakeLoop();
+  }
+}
